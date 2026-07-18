@@ -1,3 +1,4 @@
+#include <fstream> 
 #include <iostream>
 #include <string>
 #include <map>
@@ -5,13 +6,37 @@
 #include <ws2tcpip.h>
 #include <cstdlib>
 #include <ctime>
-
+#include <sstream>
 #pragma comment(lib, "ws2_32.lib")
 
 using namespace std;
 
 // ---------- URL SHORTENER LOGIC ----------
 map<string, string> url_database;
+
+// --- NEW: Load from file when server starts ---
+void load_from_file() {
+    ifstream file("urls.txt");
+    if (!file.is_open()) {
+        // File doesn't exist yet, that's fine
+        return;
+    }
+    string short_code, long_url;
+    while (file >> short_code >> long_url) {
+        url_database[short_code] = long_url;
+    }
+    file.close();
+    cout << "📂 Loaded " << url_database.size() << " existing URLs from file." << endl;
+}
+
+// --- NEW: Save to file when a new URL is shortened ---
+void save_to_file(const string& short_code, const string& long_url) {
+    ofstream file("urls.txt", ios::app);
+    if (file.is_open()) {
+        file << short_code << " " << long_url << endl;
+        file.close();
+    }
+}
 
 string generate_short_code() {
     string characters = "abcdefghijklmnopqrstuvwxyz0123456789";
@@ -24,12 +49,20 @@ string generate_short_code() {
 }
 
 string shorten_url(const string& long_url) {
+    // Check if URL already exists
+    for (const auto& pair : url_database) {
+        if (pair.second == long_url) {
+            return pair.first;  // Return existing short code
+        }
+    }
+    
+    // If not, generate a new one
     string short_code;
     do {
         short_code = generate_short_code();
     } while (url_database.find(short_code) != url_database.end());
-    
     url_database[short_code] = long_url;
+    save_to_file(short_code, long_url);
     return short_code;
 }
 
@@ -47,6 +80,9 @@ string http_response(const string& content) {
 int main() {
     srand(time(0));
     
+    // --- Load existing URLs from file ---
+    load_from_file();
+
     WSADATA wsaData;
     WSAStartup(MAKEWORD(2, 2), &wsaData);
 
@@ -71,7 +107,7 @@ int main() {
     listen(server_socket, 5);
 
     cout << "========================================" << endl;
-    cout << "🚀 URL SHORTENER API SERVER" << endl;
+    cout << "🚀 URLy URL Shortener Server" << endl;
     cout << "📡 Running on http://localhost:8080" << endl;
     cout << "✂️ Try: http://localhost:8080/shorten?url=google.com" << endl;
     cout << "🏓 Test: http://localhost:8080/ping" << endl;
@@ -89,19 +125,40 @@ int main() {
         string response;
 
         if (request.find("/ping") != string::npos) {
-            // CHANGE YOUR NAME HERE!
-            response = http_response("{\"status\":\"alive\",\"message\":\"Viresh's URL Shortener is running!\"}");
+            response = http_response("{\"status\":\"alive\",\"message\":\"URLy is running!\"}");
         }
         else if (request.find("/shorten?url=") != string::npos) {
+            // --- FIXED URL PARSING ---
             size_t url_start = request.find("/shorten?url=") + 12;
             size_t url_end = request.find(" ", url_start);
             string long_url = request.substr(url_start, url_end - url_start);
             
-            string short_code = shorten_url(long_url);
-            string json = "{\"short_code\":\"" + short_code + "\",\"long_url\":\"" + long_url + "\"}";
-            response = http_response(json);
+            // --- REMOVE ANY JUNK CHARACTERS ---
+            string clean_url = "";
+            for (char c : long_url) {
+                // Only keep valid URL characters
+                if (isalnum(c) || c == '.' || c == '/' || c == ':' || c == '-' || c == '_' || c == '?' || c == '=' || c == '&' || c == '%') {
+                    clean_url += c;
+                } else {
+                    break;  // Stop at first invalid character (like space or newline)
+                }
+            }
+            long_url = clean_url;
             
-            cout << "✂️ Shortened: " << long_url << " → " << short_code << endl;
+            // --- REMOVE LEADING '=' IF PRESENT ---
+            if (!long_url.empty() && long_url[0] == '=') {
+                long_url = long_url.substr(1);
+            }
+            
+            // --- If URL is empty, return error ---
+            if (long_url.empty()) {
+                response = http_response("{\"error\":\"No URL provided\"}");
+            } else {
+                string short_code = shorten_url(long_url);
+                string json = "{\"short_code\":\"" + short_code + "\",\"long_url\":\"" + long_url + "\"}";
+                response = http_response(json);
+                cout << "✂️ Shortened: " << long_url << " → " << short_code << endl;
+            }
         }
         else {
             response = http_response("{\"error\":\"Not found. Try /ping or /shorten?url=...\"}");
